@@ -5,6 +5,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN = re.compile(r"(?:^|/)(?:data|logs|runtime|\.venv|__pycache__|\.git|source)(?:/|$)|(?:^|/)\.env(?:$|\.)|\.(?:db|sqlite|bin|pyc)$", re.I)
 SECRETS = re.compile(r"(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN (?:RSA |OPENSSH )?PRIVATE KEY-----)")
