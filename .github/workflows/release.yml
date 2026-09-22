@@ -52,8 +52,14 @@ jobs:
       - name: 发布 NuGet Package
         shell: pwsh
         run: |
-          nuget push ".\dist\WechatJevAssistant.${{ steps.version.outputs.value }}.nupkg" `
+          nuget sources Add `
+            -Name "github" `
             -Source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" `
+            -Username "${{ github.actor }}" `
+            -Password "${{ secrets.GITHUB_TOKEN }}" `
+            -StorePasswordInClearText
+          nuget push ".\dist\WechatJevAssistant.${{ steps.version.outputs.value }}.nupkg" `
+            -Source "github" `
             -ApiKey "${{ secrets.GITHUB_TOKEN }}" `
             -NonInteractive
 
