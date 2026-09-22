@@ -12,6 +12,7 @@ APP_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = APP_DIR / "data"
 LOG_DIR = APP_DIR / "logs"
 CONFIG_PATH = DATA_DIR / "config.json"
+MESSAGE_LIMIT_OPTIONS = (100, 150, 200, 250)
 
 
 @dataclass(slots=True)
@@ -30,9 +31,20 @@ class AppConfig:
             return cls()
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         raw["region"] = CaptureRegion(**raw.get("region", {}))
-        # 旧版本配置里是 8；升级后统一读取最近 100 条。
-        raw["max_messages"] = 100
+        # 旧配置可能保存过实验值；只接受界面提供的四个稳定档位。
+        configured_limit = int(raw.get("max_messages", 100))
+        raw["max_messages"] = (
+            configured_limit
+            if configured_limit in MESSAGE_LIMIT_OPTIONS
+            else 100
+        )
         return cls(**raw)
+
+    def set_message_limit(self, value: int) -> None:
+        if value not in MESSAGE_LIMIT_OPTIONS:
+            raise ValueError("分析条数只支持 100、150、200、250")
+        self.max_messages = value
+        self.save()
 
     def save(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)

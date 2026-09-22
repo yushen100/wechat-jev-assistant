@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 
 from .autostart import set_autostart
 from .capture import CaptureError, RapidOcrEngine, WindowContext, display_profile, find_visible_wechat, get_foreground_wechat
-from .config import APP_DIR, DATA_DIR, AppConfig
+from .config import APP_DIR, DATA_DIR, MESSAGE_LIMIT_OPTIONS, AppConfig
 from .crypto_store import EncryptedHistoryStore
 from .hotkey import HotkeyListener
 from .models import CaptureRegion, ChatMessage
@@ -185,6 +185,18 @@ class AssistantApp:
         self.status_var = tk.StringVar(value="就绪：在微信聊天窗口按 Ctrl+Alt+J")
         ttk.Label(self.root, textvariable=self.status_var, padding=(12, 0, 12, 8), foreground="#555").pack(fill="x")
 
+        limit_bar = ttk.LabelFrame(self.root, text="分析条数", padding=(10, 5))
+        limit_bar.pack(fill="x", padx=12, pady=(0, 8))
+        self.message_limit_var = tk.IntVar(value=self.config.max_messages)
+        for value in MESSAGE_LIMIT_OPTIONS:
+            ttk.Radiobutton(
+                limit_bar,
+                text=f"{value} 条",
+                value=value,
+                variable=self.message_limit_var,
+                command=self._change_message_limit,
+            ).pack(side="left", expand=True, padx=4)
+
         self.output = scrolledtext.ScrolledText(
             self.root, wrap="word", font=("Microsoft YaHei UI", 10), padx=12, pady=12, state="disabled"
         )
@@ -213,6 +225,11 @@ class AssistantApp:
 
     def _on_hotkey(self) -> None:
         self.events.put(("analyze", None))
+
+    def _change_message_limit(self) -> None:
+        value = int(self.message_limit_var.get())
+        self.config.set_message_limit(value)
+        self.status_var.set(f"已切换为分析最近 {value} 条；下次分析生效")
 
     def _poll_events(self) -> None:
         try:
@@ -247,7 +264,9 @@ class AssistantApp:
                 self.worker_lock.release()
                 self._show_error(str(exc))
                 return
-        self.status_var.set("正在读取聊天记录：0/100 条……")
+        self.status_var.set(
+            f"正在读取聊天记录：0/{self.config.max_messages} 条……"
+        )
         self._set_output("正在读取并分析当前微信聊天……\n\n旧分析结果已清除，请稍候。")
         self.root.deiconify()
         self.root.lift()

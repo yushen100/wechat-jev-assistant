@@ -32,7 +32,7 @@ from wechat_jev.capture import (  # noqa: E402
     display_profile,
     merge_older_page,
 )
-from wechat_jev.config import AppConfig  # noqa: E402
+from wechat_jev.config import MESSAGE_LIMIT_OPTIONS, AppConfig  # noqa: E402
 from wechat_jev.conversation_memory import (  # noqa: E402
     MEMORY_PARSER_VERSION,
     canonicalize_speakers,
@@ -262,6 +262,9 @@ class GroupOcrTests(unittest.TestCase):
 class MultiPageCaptureTests(unittest.TestCase):
     def test_default_reads_one_hundred_messages(self) -> None:
         self.assertEqual(AppConfig().max_messages, 100)
+
+    def test_message_limit_has_four_visible_levels(self) -> None:
+        self.assertEqual(MESSAGE_LIMIT_OPTIONS, (100, 150, 200, 250))
 
     def test_scroll_distance_uses_calibrated_region_height(self) -> None:
         context = WindowContext(hwnd=1, rect=(0, 0, 1000, 1000), title="测试")
@@ -526,6 +529,7 @@ class AnalysisStartTests(unittest.TestCase):
         context = WindowContext(hwnd=123, rect=(0, 0, 1000, 800), title="测试会话")
         foreground.return_value = context
         app = AssistantApp.__new__(AssistantApp)
+        app.config = AppConfig()
         app.worker_lock = __import__("threading").Lock()
         app.status_var = Mock()
         app.root = Mock()
