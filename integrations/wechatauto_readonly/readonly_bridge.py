@@ -89,9 +89,15 @@ def _load_group_display_names(db, chatroom_username: str) -> dict[str, str]:
 
 
 def _member_display_name(member: dict[str, object], group_name: str = "") -> str:
-    return str(
-        member.get("remark") or group_name or member.get("nick_name") or ""
-    ).strip()
+    """备注名优先；有差异时保留群昵称，避免人物对应关系丢失。"""
+    remark = str(member.get("remark") or "").strip()
+    group_name = str(group_name or "").strip()
+    nickname = str(member.get("nick_name") or "").strip()
+    if remark:
+        if group_name and group_name != remark:
+            return f"{remark}（群昵称：{group_name}）"
+        return remark
+    return group_name or nickname
 
 
 def _load_db_module():
@@ -224,6 +230,12 @@ def query(payload: dict[str, object]) -> dict[str, object]:
         if not candidates or candidates[0][0] < 0.78:
             raise RuntimeError(f"数据库中找不到会话标题：{raw_title}")
         plausible = [candidate for candidate in candidates if candidate[0] >= 0.78]
+        exact_matches = [
+            candidate for candidate in plausible
+            if _title_key(candidate[2]) == title
+        ]
+        if len(exact_matches) > 1 and expected_member_count is None:
+            raise RuntimeError(f"存在多个同名会话，缺少成员数，已拒绝猜测：{raw_title}")
         if expected_member_count is not None:
             count_matches = []
             for candidate in plausible:
@@ -246,9 +258,23 @@ def query(payload: dict[str, object]) -> dict[str, object]:
         ):
             raise RuntimeError(f"会话标题匹配不唯一：{raw_title}")
         _, username, matched_title = candidates[0]
-        recent = db.get_messages(username, limit=max(500, limit * 5))
-        text_rows = [row for row in recent if str(row.get("type")) == "文本"][:limit]
-        rows = list(reversed(text_rows))
+        usable_types = {"文本", "动画表情"}
+        usable_rows = []
+        offset = 0
+        page_size = max(500, limit * 5)
+        while len(usable_rows) < limit and offset < 5000:
+            page = db.get_messages(username, limit=page_size, offset=offset)
+            if not page:
+                break
+            usable_rows.extend(
+                row for row in page
+                if str(row.get("type")) in usable_types
+            )
+            offset += len(page)
+            if len(page) < page_size:
+                break
+        usable_rows = usable_rows[:limit]
+        rows = list(reversed(usable_rows))
         if not rows:
             raise RuntimeError("该会话没有可读取的文字消息")
         is_group = username.endswith("@chatroom")
@@ -282,8 +308,10 @@ def query(payload: dict[str, object]) -> dict[str, object]:
                 if not speaker or speaker.startswith("wxid_"):
                     speaker = "未知群成员"
             else:
-                speaker = "对方"
-            msg_type = "文本"
+                speaker = matched_title
+            msg_type = str(row.get("type") or "文本")
+            message_type = "sticker" if msg_type == "动画表情" else "text"
+            message_id = f"{int(row.get('sort_seq') or 0)}:{int(row.get('local_id') or 0)}"
             messages.append({
                 "speaker": speaker,
                 "text": content,
@@ -291,16 +319,20 @@ def query(payload: dict[str, object]) -> dict[str, object]:
                 "confidence": 1.0,
                 "is_self": is_self,
                 "speaker_confidence": 1.0 if speaker != "未知群成员" else 0.35,
-                "message_type": "text",
+                "message_type": message_type,
                 "sender_source": "wechat_database",
                 "content_source": f"wechat_database:{msg_type}",
                 "visual_fingerprint": "",
+                "message_id": message_id,
+                "created_at": int(row.get("create_time") or 0),
+                "sender_id": "self" if is_self else str(sender or "") if is_group else username,
             })
         if is_group and invalid_group_senders:
             raise RuntimeError("数据库消息发送者与目标群成员表不一致，已拒绝分析以防串会话")
         return {
             "ok": True,
             "matched_title": matched_title,
+            "conversation_id": username,
             "conversation_type": "group" if is_group else "private",
             "messages": messages,
             "keys_persisted": False,

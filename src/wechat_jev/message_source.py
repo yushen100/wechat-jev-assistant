@@ -33,6 +33,7 @@ class MessageBatch:
     source: str
     conversation_type: str = "unknown"
     contact_name: str = ""
+    conversation_id: str = ""
 
 
 def _infer_screen_conversation_type(messages: list[ChatMessage]) -> str:
@@ -151,6 +152,7 @@ class DatabaseFirstMessageSource:
 
     def __init__(self, engine: RapidOcrEngine, store: EncryptedHistoryStore) -> None:
         self.engine = engine
+        self.store = store
         project = Path(__file__).resolve().parents[2]
         self.bridge = project / "integrations" / "wechatauto_readonly" / "readonly_bridge.py"
 
@@ -165,12 +167,16 @@ class DatabaseFirstMessageSource:
             raise CaptureError("数据库只读桥接器不存在")
         if progress:
             progress("正在识别会话标题；不会读取消息区……")
-        title_source = "OCR"
-        image = capture_chat_title(context, region)
-        try:
-            title = self.engine.recognize_title(image)
-        finally:
-            image.close()
+        title_source = "UIA"
+        from .uia_title import read_wechat_title
+        title = read_wechat_title(context.hwnd, context.rect)
+        if not title:
+            title_source = "OCR"
+            image = capture_chat_title(context, region)
+            try:
+                title = self.engine.recognize_title(image)
+            finally:
+                image.close()
         # RapidOCR/Win32 偶尔会带回孤立 UTF-16 代理字符。显式替换，且后续
         # 通过 ASCII 转义 JSON 字节流与隔离进程通信，避免 subprocess 再编码失败。
         title = "".join(
@@ -197,14 +203,37 @@ class DatabaseFirstMessageSource:
                 messages = [ChatMessage(**item) for item in payload.get("messages", [])]
                 if messages:
                     matched_title = str(payload.get("matched_title") or title)
+                    conversation_id = str(payload.get("conversation_id", ""))
+                    memory_id = f"database:{conversation_id}"
+                    memories = {
+                        str(item.get("memory_id", "")): item
+                        for item in self.store.list_memories(limit=200)
+                    }
+                    memory = memories.get(memory_id)
+                    added = len(messages)
+                    if memory is not None:
+                        messages, added, _ = merge_with_memory(memory, messages)
+                    memory_payload = {
+                        "parser_version": MEMORY_PARSER_VERSION,
+                        "conversation_id": conversation_id,
+                        "messages": [message.to_dict() for message in messages[-500:]],
+                        "created_at": (
+                            memory.get("created_at") if memory
+                            else new_memory_payload([])[1]["created_at"]
+                        ),
+                    }
+                    self.store.upsert_memory(memory_id, matched_title, memory_payload)
+                    selected = messages[-max_messages:]
                     warnings = [
                         f"数据库文字模式：{title_source} 识别“{title}”，"
-                        f"匹配“{matched_title}”，读取 {len(messages)} 条"
+                        f"匹配“{matched_title}”，读取 {len(selected)} 条；"
+                        f"会话ID已校验，本次新增 {added} 条"
                     ]
                     return MessageBatch(
-                            messages, 1.0, warnings, "wechat_database",
+                            selected, 1.0, warnings, "wechat_database+encrypted_memory",
                             str(payload.get("conversation_type", "unknown")),
                             matched_title,
+                            conversation_id,
                         )
             raise CaptureError(str(payload.get("error", "数据库桥接器未返回文字消息")))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:

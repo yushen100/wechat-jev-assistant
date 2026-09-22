@@ -18,6 +18,9 @@ MEMORY_PARSER_VERSION = 3
 def message_anchor(message: ChatMessage | dict[str, Any]) -> str:
     get = message.get if isinstance(message, dict) else lambda key, default=None: getattr(message, key, default)
     fingerprint = str(get("visual_fingerprint", "") or "")
+    message_id = str(get("message_id", "") or "")
+    if message_id:
+        return f"id:{message_id}"
     if fingerprint:
         return f"v:{fingerprint}"
     text = NORMALIZE_RE.sub("", str(get("text", "")).lower())

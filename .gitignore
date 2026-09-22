@@ -27,5 +27,6 @@ dist/
 .env.*
 !.env.example
 *key*
+!src/wechat_jev/hotkey.py
 *secret*
 *credential*

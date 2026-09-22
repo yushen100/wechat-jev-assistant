@@ -37,6 +37,7 @@ from wechat_jev.conversation_memory import (  # noqa: E402
     MEMORY_PARSER_VERSION,
     canonicalize_speakers,
     find_matching_memory,
+    message_anchor,
     merge_with_memory,
 )
 from wechat_jev.models import CaptureRegion, ChatMessage  # noqa: E402
@@ -79,7 +80,10 @@ class RegionTests(unittest.TestCase):
 class GroupOcrTests(unittest.TestCase):
     def test_member_name_prefers_remark_then_group_name_then_nickname(self) -> None:
         member = {"remark": "我的备注", "nick_name": "微信昵称"}
-        self.assertEqual(_member_display_name(member, "群内昵称"), "我的备注")
+        self.assertEqual(
+            _member_display_name(member, "群内昵称"),
+            "我的备注（群昵称：群内昵称）",
+        )
         member["remark"] = ""
         self.assertEqual(_member_display_name(member, "群内昵称"), "群内昵称")
         self.assertEqual(_member_display_name(member, ""), "微信昵称")
@@ -324,6 +328,16 @@ class MultiPageCaptureTests(unittest.TestCase):
 
 
 class ConversationMemoryTests(unittest.TestCase):
+    def test_database_message_id_is_primary_memory_anchor(self) -> None:
+        message = ChatMessage(
+            "示例成员甲",
+            "同样的文字",
+            0,
+            1.0,
+            message_id="12345:67",
+        )
+        self.assertEqual(message_anchor(message), "id:12345:67")
+
     def test_history_corrects_one_character_nickname_error(self) -> None:
         memory = [
             ChatMessage("陈晓宇", "第一句", 0, 0.99, speaker_confidence=0.99).to_dict(),

@@ -205,7 +205,11 @@ class AssistantApp:
         menu.add_cascade(label="设置", menu=settings)
         self.root.config(menu=menu)
 
-        self._set_output("使用方法\n\n1. 打开微信目标聊天。\n2. 按 Ctrl+Alt+J。\n3. 等待本地 OCR 和 Jev 分析。\n\n程序不会读取微信数据库，也不会自动发送消息。")
+        self._set_output(
+            "使用方法\n\n1. 打开微信目标聊天。\n2. 按 Ctrl+Alt+J。"
+            "\n3. 等待会话校验、只读数据库读取和 Jev 分析。"
+            "\n\nOCR/UIA 只识别会话标题；程序不会操作输入框或自动发送消息。"
+        )
 
     def _on_hotkey(self) -> None:
         self.events.put(("analyze", None))
@@ -339,6 +343,7 @@ class AssistantApp:
             state = {
                 "conversation": {
                     "contact": resolved_contact,
+                    "id": batch.conversation_id,
                     "source": batch.source,
                     "type": batch.conversation_type,
                 },

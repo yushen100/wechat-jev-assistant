@@ -16,6 +16,9 @@ class ChatMessage:
     sender_source: str = "position"
     content_source: str = "text_ocr"
     visual_fingerprint: str = ""
+    message_id: str = ""
+    created_at: int = 0
+    sender_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
