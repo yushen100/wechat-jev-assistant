@@ -18,7 +18,9 @@ from wechat_jev.uia_title import UiaText, choose_header_title  # noqa: E402
 from integrations.wechatauto_readonly.readonly_bridge import (  # noqa: E402
     _group_display_names,
     _group_sender_from_content,
+    _is_usable_row,
     _member_display_name,
+    _quote_text_from_content,
     _title_key,
     _title_member_count,
 )
@@ -164,6 +166,23 @@ class GroupOcrTests(unittest.TestCase):
         )
         self.assertEqual(sender, "wxid_example_sender")
         self.assertEqual(text, "明天晚上的活动提醒")
+
+    def test_quote_card_extracts_reply_and_quoted_text_without_identity_fields(self) -> None:
+        content = """wxid_sender:
+<msg><appmsg><title>这是回复正文</title><type>57</type><refermsg><fromusr>wxid_private</fromusr><displayname>真实姓名</displayname><content>这是被引用的原文</content></refermsg></appmsg></msg>"""
+        extracted = _quote_text_from_content(content)
+        self.assertEqual(
+            extracted,
+            "[回复] 这是回复正文\n[引用] 这是被引用的原文",
+        )
+        self.assertNotIn("wxid_", extracted or "")
+        self.assertNotIn("真实姓名", extracted or "")
+        self.assertTrue(_is_usable_row({"type": "文件/链接/卡片", "content": content}))
+
+    def test_non_quote_card_is_not_usable(self) -> None:
+        content = "<msg><appmsg><title>普通链接</title><type>5</type></appmsg></msg>"
+        self.assertIsNone(_quote_text_from_content(content))
+        self.assertFalse(_is_usable_row({"type": "文件/链接/卡片", "content": content}))
 
     def test_title_ocr_replaces_invalid_unicode_surrogate(self) -> None:
         def box(x1: int, y1: int, x2: int, y2: int) -> list[list[int]]:

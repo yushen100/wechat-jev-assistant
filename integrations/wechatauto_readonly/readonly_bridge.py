@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 from difflib import SequenceMatcher
+from html import unescape
 import importlib
 import json
 import shutil
 import sys
 import tempfile
 import types
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -185,6 +187,40 @@ def _group_sender_from_content(
     return username, content[match.end():].lstrip()
 
 
+def _quote_text_from_content(content: str) -> str | None:
+    """提取微信引用回复；不保留 XML、账号 ID 或引用者身份字段。"""
+    raw = str(content or "").strip()
+    xml_start = raw.find("<msg")
+    if xml_start < 0:
+        return None
+    xml_text = unescape(raw[xml_start:]).replace("\x00", "").strip()
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    appmsg = root.find(".//appmsg")
+    refermsg = root.find(".//refermsg")
+    if appmsg is None or refermsg is None:
+        return None
+    reply = str(appmsg.findtext("title") or "").strip()
+    quoted = str(refermsg.findtext("content") or "").strip()
+    if not reply:
+        return None
+    parts = [f"[回复] {reply}"]
+    if quoted:
+        parts.append(f"[引用] {quoted}")
+    return "\n".join(parts)
+
+
+def _is_usable_row(row: dict[str, object]) -> bool:
+    msg_type = str(row.get("type") or "")
+    if msg_type in {"文本", "动画表情"}:
+        return True
+    return msg_type == "文件/链接/卡片" and _quote_text_from_content(
+        str(row.get("content") or "")
+    ) is not None
+
+
 def _similar(left: str, right: str) -> bool:
     if not left or not right:
         return False
@@ -258,7 +294,6 @@ def query(payload: dict[str, object]) -> dict[str, object]:
         ):
             raise RuntimeError(f"会话标题匹配不唯一：{raw_title}")
         _, username, matched_title = candidates[0]
-        usable_types = {"文本", "动画表情"}
         usable_rows = []
         offset = 0
         page_size = max(500, limit * 5)
@@ -266,10 +301,7 @@ def query(payload: dict[str, object]) -> dict[str, object]:
             page = db.get_messages(username, limit=page_size, offset=offset)
             if not page:
                 break
-            usable_rows.extend(
-                row for row in page
-                if str(row.get("type")) in usable_types
-            )
+            usable_rows.extend(row for row in page if _is_usable_row(row))
             offset += len(page)
             if len(page) < page_size:
                 break
@@ -310,9 +342,12 @@ def query(payload: dict[str, object]) -> dict[str, object]:
             else:
                 speaker = matched_title
             msg_type = str(row.get("type") or "文本")
+            quote_text = _quote_text_from_content(content)
             message_type = "sticker" if msg_type == "动画表情" else "text"
             if message_type == "sticker":
                 content = "[动画表情]"
+            elif quote_text is not None:
+                content = quote_text
             message_id = f"{int(row.get('sort_seq') or 0)}:{int(row.get('local_id') or 0)}"
             messages.append({
                 "speaker": speaker,
