@@ -356,6 +356,8 @@ class AssistantApp:
             ))
             stage = "调用 TypeSafe"
             result = self.client.evaluate_isolated(state)
+            if result.fallback_used:
+                warnings.append("TypeSafe 首次响应超时，已自动使用最近 40 条、最多 3 个重点人物完成分析")
             stage = "保存加密历史"
             record = {
                 "contact": resolved_contact,

@@ -273,6 +273,37 @@ class TypeSafeError(RuntimeError):
 class TypeSafeResult:
     payload: dict[str, Any]
     elapsed_seconds: float
+    fallback_used: bool = False
+
+
+def compact_state_for_retry(state: dict[str, Any]) -> dict[str, Any]:
+    """超时后缩减上下文和人物问题数量，避免原样重复一个过重请求。"""
+    compact = dict(state)
+    compact["messages"] = list(state.get("messages", []))[-40:]
+    participants = [str(value) for value in state.get("participants", []) if value][:3]
+    compact["participants"] = participants
+    original_context = state.get("participant_context", {})
+    compact["participant_context"] = {
+        speaker: list(original_context.get(speaker, []))[-4:]
+        for speaker in participants
+    }
+    return compact
+    fallback_used: bool = False
+
+
+def compact_state_for_retry(state: dict[str, Any]) -> dict[str, Any]:
+    """超时后缩减上下文和人物问题数量，避免原样重复一个过重请求。"""
+    compact = dict(state)
+    messages = list(state.get("messages", []))[-40:]
+    participants = [str(value) for value in state.get("participants", []) if value][:3]
+    original_context = state.get("participant_context", {})
+    compact["messages"] = messages
+    compact["participants"] = participants
+    compact["participant_context"] = {
+        speaker: list(original_context.get(speaker, []))[-4:]
+        for speaker in participants
+    }
+    return compact
 
 
 class TypeSafeClient:
@@ -284,13 +315,24 @@ class TypeSafeClient:
         if not api_key:
             raise TypeSafeError("缺少环境变量 TYPESAFE_API_KEY")
 
-        body = {"state": state, "model": "jev-latest", "questions": build_questions(state)}
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         started = time.perf_counter()
         last_error: Exception | None = None
+        request_state = state
+        fallback_used = False
         for attempt in range(2):
             try:
-                response = requests.post(API_URL, headers=headers, json=body, timeout=self.timeout)
+                body = {
+                    "state": request_state,
+                    "model": "jev-latest",
+                    "questions": build_questions(request_state),
+                }
+                response = requests.post(
+                    API_URL,
+                    headers=headers,
+                    json=body,
+                    timeout=(5.0, self.timeout),
+                )
                 if response.status_code in {429, 500, 502, 503, 504} and attempt == 0:
                     time.sleep(0.8)
                     continue
@@ -304,9 +346,29 @@ class TypeSafeClient:
                 payload = response.json()
                 if not isinstance(payload.get("answers"), dict):
                     raise TypeSafeError("TypeSafe 返回缺少 answers")
-                return TypeSafeResult(payload=payload, elapsed_seconds=time.perf_counter() - started)
+                return TypeSafeResult(
+                    payload=payload,
+                    elapsed_seconds=time.perf_counter() - started,
+                    fallback_used=fallback_used,
+                )
             except TypeSafeError:
                 raise
+            except requests.ReadTimeout as exc:
+                last_error = exc
+                if attempt == 0:
+                    request_state = compact_state_for_retry(state)
+                    fallback_used = True
+                    time.sleep(0.4)
+                    continue
+                raise TypeSafeError(
+                    "TypeSafe 响应超时；已用精简上下文重试。请检查网络或稍后再试"
+                ) from exc
+            except (requests.ConnectTimeout, requests.ConnectionError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(0.6)
+                    continue
+                raise TypeSafeError("无法连接 TypeSafe；请检查网络、代理或防火墙") from exc
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt == 0:
@@ -337,6 +399,7 @@ class TypeSafeClient:
         return TypeSafeResult(
             payload=dict(envelope["payload"]),
             elapsed_seconds=float(envelope["elapsed_seconds"]),
+            fallback_used=bool(envelope.get("fallback_used", False)),
         )
 
     @staticmethod
@@ -358,6 +421,7 @@ def _worker_main() -> int:
             "ok": True,
             "payload": result.payload,
             "elapsed_seconds": result.elapsed_seconds,
+            "fallback_used": result.fallback_used,
         }
     except Exception as exc:
         envelope = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
