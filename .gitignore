@@ -1,0 +1,30 @@
+# 本地运行环境
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 私人数据：聊天历史、DPAPI 密钥、会话记忆和本机配置
+data/
+logs/
+runtime/
+integrations/wechatauto_readonly/runtime/
+
+# 上游源码由 setup.ps1 按固定提交下载，不进入本仓库
+integrations/wechatauto_readonly/source/
+
+# 编辑器和系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# 凭据与环境文件
+.env
+.env.*
+!.env.example
+*key*
+*secret*
+*credential*

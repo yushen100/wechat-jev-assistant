@@ -1,0 +1,9 @@
+Pillow>=10.4,<12
+pywin32>=306
+psutil>=6,<8
+requests>=2.32,<3
+cryptography>=43,<47
+zstandard>=0.25,<1
+rapidocr-onnxruntime>=1.4,<2
+pystray>=0.19,<1
+pywinauto>=0.6.9,<1
