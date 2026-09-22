@@ -22,7 +22,7 @@ from .crypto_store import EncryptedHistoryStore
 from .hotkey import HotkeyListener
 from .models import CaptureRegion, ChatMessage
 from .message_source import DatabaseFirstMessageSource
-from .privacy import redact_messages
+from .privacy import anonymize_state, redact_messages, safe_display_text
 from .region_selector import RegionSelector
 from .typesafe_client import TypeSafeClient, TypeSafeError, build_reply_evaluation, limit_messages_for_state, select_focus_participants
 
@@ -380,7 +380,8 @@ class AssistantApp:
                 f"已读取 {len(messages)} 条，只提交 {len(redacted)} 条文字/表情，正在调用 Jev……",
             ))
             stage = "调用 TypeSafe"
-            result = self.client.evaluate_isolated(state)
+            outbound_state = anonymize_state(state)
+            result = self.client.evaluate_isolated(outbound_state)
             if result.fallback_used:
                 warnings.append("TypeSafe 首次响应超时，已自动使用最近 40 条、最多 3 个重点人物完成分析")
             stage = "保存加密历史"
@@ -429,7 +430,10 @@ class AssistantApp:
         tension = answers["tension"]
         action = answers["next_action"]
         focus = record.get("redacted_state", {}).get("focus_message", {})
-        focus_text = str(focus.get("text", "")).replace("\n", " ")
+        focus_text = safe_display_text(
+            str(focus.get("text", "")),
+            str(focus.get("message_type", "")),
+        ).replace("\n", " ")
         if len(focus_text) > 72:
             focus_text = focus_text[:69] + "…"
         score = float(tension.get("score", 0))
@@ -479,7 +483,11 @@ class AssistantApp:
             reply_legend = str(
                 reply_answer.get("legend", {}).get(str(reply_level), "")
             ).strip()
-            reply_text = str(reply_evaluation.get("reply", {}).get("text", "")).replace("\n", " ")
+            reply_message = reply_evaluation.get("reply", {})
+            reply_text = safe_display_text(
+                str(reply_message.get("text", "")),
+                str(reply_message.get("message_type", "")),
+            ).replace("\n", " ")
             if len(reply_text) > 60:
                 reply_text = reply_text[:57] + "…"
             lines.extend([
@@ -715,7 +723,10 @@ class AssistantApp:
                 return str(answer.get("choice", "无法判断"))
 
             focus = record.get("redacted_state", {}).get("focus_message", {})
-            focus_text = str(focus.get("text", "")).replace("\n", " ")
+            focus_text = safe_display_text(
+                str(focus.get("text", "")),
+                str(focus.get("message_type", "")),
+            ).replace("\n", " ")
             if len(focus_text) > 90:
                 focus_text = focus_text[:87] + "…"
             tension = answers.get("tension", {})
@@ -747,7 +758,11 @@ class AssistantApp:
             ]
             reply_evaluation = state.get("reply_evaluation")
             if reply_evaluation:
-                reply = str(reply_evaluation.get("reply", {}).get("text", "")).replace("\n", " ")
+                reply_message = reply_evaluation.get("reply", {})
+                reply = safe_display_text(
+                    str(reply_message.get("text", "")),
+                    str(reply_message.get("message_type", "")),
+                ).replace("\n", " ")
                 reply_score = float(answers.get("my_reply_effectiveness", {}).get("score", 0))
                 reply_level = max(0, min(9, round(reply_score)))
                 reply_legend = str(answers.get("my_reply_effectiveness", {}).get("legend", {}).get(str(reply_level), "")).strip()

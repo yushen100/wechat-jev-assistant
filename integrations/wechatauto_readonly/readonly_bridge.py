@@ -311,6 +311,8 @@ def query(payload: dict[str, object]) -> dict[str, object]:
                 speaker = matched_title
             msg_type = str(row.get("type") or "文本")
             message_type = "sticker" if msg_type == "动画表情" else "text"
+            if message_type == "sticker":
+                content = "[动画表情]"
             message_id = f"{int(row.get('sort_seq') or 0)}:{int(row.get('local_id') or 0)}"
             messages.append({
                 "speaker": speaker,

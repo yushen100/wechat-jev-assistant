@@ -41,7 +41,7 @@ from wechat_jev.conversation_memory import (  # noqa: E402
     merge_with_memory,
 )
 from wechat_jev.models import CaptureRegion, ChatMessage  # noqa: E402
-from wechat_jev.privacy import redact_text  # noqa: E402
+from wechat_jev.privacy import anonymize_state, redact_messages, redact_text, safe_display_text  # noqa: E402
 from wechat_jev.region_selector import region_from_points  # noqa: E402
 from wechat_jev.typesafe_client import TypeSafeClient, TypeSafeError, build_questions, build_reply_evaluation, limit_messages_for_state, select_focus_participants  # noqa: E402
 
@@ -55,6 +55,63 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn("11010519491231002X", result)
         self.assertNotIn("a=1", result)
         self.assertIn("[手机号]", result)
+
+    def test_sticker_xml_is_never_exposed(self) -> None:
+        xml = '<msg><emoji fromusername="wxid_private123" tousername="wxid_other456" /></msg>'
+        self.assertEqual(safe_display_text(xml, "sticker"), "[动画表情]")
+        result = redact_messages([{
+            "speaker": "张三",
+            "text": xml,
+            "is_self": False,
+            "message_type": "sticker",
+            "sender_id": "wxid_private123",
+            "message_id": "123:4",
+            "created_at": 123456,
+        }])[0]
+        self.assertEqual(result["text"], "[动画表情]")
+        self.assertNotIn("sender_id", result)
+        self.assertNotIn("message_id", result)
+        self.assertNotIn("created_at", result)
+
+    def test_outbound_state_anonymizes_names_and_conversation(self) -> None:
+        state = {
+            "conversation": {
+                "contact": "真实群名",
+                "id": "123@chatroom",
+                "source": "wechat_database",
+                "type": "group",
+            },
+            "messages": [
+                {
+                    "speaker": "真实姓名甲",
+                    "text": "你好",
+                    "is_self": False,
+                    "message_type": "text",
+                    "sender_id": "wxid_private123",
+                    "message_id": "123:4",
+                    "created_at": 123456,
+                },
+                {"speaker": "我方", "text": "收到", "is_self": True, "message_type": "text"},
+            ],
+            "participants": ["真实姓名甲"],
+            "participant_context": {
+                "真实姓名甲": [
+                    {"speaker": "真实姓名甲", "text": "你好", "is_self": False, "message_type": "text"}
+                ]
+            },
+            "focus_message": {
+                "speaker": "真实姓名甲", "text": "你好", "is_self": False, "message_type": "text"
+            },
+        }
+        outbound = anonymize_state(state)
+        serialized = json.dumps(outbound, ensure_ascii=False)
+        self.assertNotIn("真实群名", serialized)
+        self.assertNotIn("真实姓名甲", serialized)
+        self.assertNotIn("123@chatroom", serialized)
+        self.assertNotIn("wxid_private123", serialized)
+        self.assertNotIn("123:4", serialized)
+        self.assertNotIn("123456", serialized)
+        self.assertIn("成员A", serialized)
 
 
 class RegionTests(unittest.TestCase):
