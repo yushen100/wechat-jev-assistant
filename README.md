@@ -17,6 +17,8 @@
 
 要求：Windows、微信桌面版、Python 3.12、Git。
 
+完整步骤见：[部署指南](content/0922_部署指南_v1.md)。
+
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\setup.ps1
