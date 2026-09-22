@@ -197,17 +197,18 @@ class AssistantApp:
                 command=self._change_message_limit,
             ).pack(side="left", expand=True, padx=4)
 
-        self.output = scrolledtext.ScrolledText(
-            self.root, wrap="word", font=("Microsoft YaHei UI", 10), padx=12, pady=12, state="disabled"
-        )
-        self.output.pack(fill="both", expand=True, padx=12, pady=(0, 10))
-
         actions = ttk.Frame(self.root, padding=(12, 0, 12, 12))
-        actions.pack(fill="x")
+        # 先固定到底部，再让正文占用剩余空间；窄窗口也不会把按钮挤出屏幕。
+        actions.pack(side="bottom", fill="x")
         ttk.Button(actions, text="重新分析", command=self.reanalyze).pack(side="left", padx=(0, 6))
         ttk.Button(actions, text="区域校准", command=self.open_calibration).pack(side="left", padx=6)
         ttk.Button(actions, text="查看历史", command=self.open_history).pack(side="left", padx=6)
         ttk.Button(actions, text="隐藏", command=self.hide).pack(side="right")
+
+        self.output = scrolledtext.ScrolledText(
+            self.root, wrap="word", font=("Microsoft YaHei UI", 10), padx=12, pady=12, state="disabled"
+        )
+        self.output.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
         menu = tk.Menu(self.root)
         settings = tk.Menu(menu, tearoff=False)
