@@ -38,6 +38,11 @@ jobs:
         shell: pwsh
         run: .\scripts\0922_build_release_v1.ps1 -Version "${{ steps.version.outputs.value }}"
 
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: 安装 NuGet
         uses: NuGet/setup-nuget@v2
 
@@ -57,6 +62,15 @@ jobs:
             $_.Name -match '(?i)(history\.db|history\.key|\.env$)'
           }
           if ($Bad) { $Bad.FullName; throw "发布包包含禁止文件" }
+
+      - name: 审查源码与归档内部
+        shell: pwsh
+        run: |
+          python .\scripts\0923_发布隐私审查_v1.py
+          if ($LASTEXITCODE -ne 0) { throw "源码隐私检查失败" }
+          $Archives = Get-ChildItem .\dist -File | Where-Object { $_.Extension -in '.zip', '.nupkg' }
+          python .\scripts\0923_发布隐私审查_v1.py @($Archives.FullName)
+          if ($LASTEXITCODE -ne 0) { throw "归档隐私检查失败" }
 
       - name: 发布 NuGet Package
         shell: pwsh

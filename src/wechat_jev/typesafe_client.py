@@ -262,8 +262,20 @@ def build_questions(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "效果极佳，对方明确积极回应且问题得到解决",
             ],
         }
+    candidates = [str(value).strip() for value in state.get("candidate_replies", []) if str(value).strip()][:4]
+    if len(candidates) >= 2:
+        questions["best_candidate_reply"] = {
+            "type": "choice",
+            "instructions": (
+                "结合 messages、focus_message 和本轮整体判断，从 candidate_replies 中选择最适合用户此刻发送的一条。"
+                "重点考虑是否回应核心需求、是否可能升级冲突、是否自然且不过度承诺。"
+            ),
+            "criteria": {
+                f"candidate_{index + 1}": candidate
+                for index, candidate in enumerate(candidates)
+            },
+        }
     return questions
-
 
 class TypeSafeError(RuntimeError):
     pass

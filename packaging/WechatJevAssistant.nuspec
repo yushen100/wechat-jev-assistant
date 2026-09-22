@@ -10,7 +10,7 @@
     <projectUrl>https://github.com/yushen100/wechat-jev-assistant</projectUrl>
     <repository type="git" url="https://github.com/yushen100/wechat-jev-assistant.git" commit="$commit$" />
     <description>Windows 微信对话分析助手：本地读取、脱敏、TypeSafe Jev 判断与加密历史。</description>
-    <releaseNotes>首个私有预发布版本。</releaseNotes>
+    <releaseNotes>v0.3.0：可选 DeepSeek 候选回复、Jev 推荐、额外暂停回应、候选配色及隐私改进。</releaseNotes>
     <tags>windows wechat typesafe jev conversation-analysis</tags>
   </metadata>
   <files>
@@ -21,7 +21,8 @@
     <file src="..\0921_启动微信Jev助手_v1.cmd" target="tools" />
     <file src="..\0921_运行测试_v1.cmd" target="tools" />
     <file src="..\0921_使用说明_v1.md" target="tools" />
-    <file src="..\assets\**\*" target="tools\assets" />
+    <file src="..\assets\0922_jev助手图标_v1.png" target="tools\assets" />
+    <file src="..\assets\0922_jev助手图标_v1.ico" target="tools\assets" />
     <file src="..\content\**\*" target="tools\content" />
     <file src="..\src\**\*.py" target="tools\src" />
     <file src="..\tests\**\*.py" target="tools\tests" />

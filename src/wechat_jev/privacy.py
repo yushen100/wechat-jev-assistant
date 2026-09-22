@@ -84,10 +84,14 @@ def anonymize_state(state: dict[str, Any]) -> dict[str, Any]:
         }
         speaker = str(message.get("speaker", ""))
         result["speaker"] = aliases.get(speaker, speaker)
-        result["text"] = safe_display_text(
+        safe_text = safe_display_text(
             str(message.get("text", "")),
             str(message.get("message_type", "")),
         )
+        for real_name, alias in aliases.items():
+            if real_name:
+                safe_text = safe_text.replace(real_name, alias)
+        result["text"] = safe_text
         return result
 
     outbound["conversation"] = {

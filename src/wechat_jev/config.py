@@ -23,6 +23,9 @@ class AppConfig:
     ocr_min_confidence: float = 0.45
     low_answer_confidence: float = 0.35
     autostart: bool = False
+    draft_enabled: bool = False
+    draft_base_url: str = "https://api.deepseek.com/chat/completions"
+    draft_model: str = "deepseek-flash"
     region_profiles: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @classmethod

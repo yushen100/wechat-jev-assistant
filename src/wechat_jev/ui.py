@@ -19,6 +19,7 @@ from .autostart import set_autostart
 from .capture import CaptureError, RapidOcrEngine, WindowContext, display_profile, find_visible_wechat, get_foreground_wechat
 from .config import APP_DIR, DATA_DIR, MESSAGE_LIMIT_OPTIONS, AppConfig
 from .crypto_store import EncryptedHistoryStore
+from .draft_client import DraftClient, DraftError, PAUSE_REPLY_CANDIDATE, with_pause_candidate
 from .hotkey import HotkeyListener
 from .models import CaptureRegion, ChatMessage
 from .message_source import DatabaseFirstMessageSource
@@ -46,6 +47,14 @@ KEY_RESULT_COLORS = {
     "后续确在回应我：": "#1565C0",
     "实际效果：": "#EF6C00",
     "有效性：": "#2E7D32",
+}
+
+CANDIDATE_RESULT_COLORS = {
+    "推荐": "#2E7D32",
+    "候选1": "#2E7D32",
+    "候选2": "#1565C0",
+    "候选3": "#6A1B9A",
+    "候选4": "#EF6C00",
 }
 
 SUMMARY_RESULT_COLORS = {
@@ -153,11 +162,16 @@ class AssistantApp:
         self.config = AppConfig.load()
         self.store = EncryptedHistoryStore(DATA_DIR)
         self.client = TypeSafeClient()
+        self.draft_client = DraftClient()
         self.ocr: RapidOcrEngine | None = None
         self.message_source: DatabaseFirstMessageSource | None = None
         self.hotkey = HotkeyListener(self._on_hotkey)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.worker_lock = threading.Lock()
+        self.analysis_sequence = 0
+        self.active_analysis_id = 0
+        self.pending_analysis_context: WindowContext | None = None
+        self.has_pending_analysis = False
         self.last_context: WindowContext | None = None
         self.last_messages: list[ChatMessage] = []
         self.tray = None
@@ -197,6 +211,16 @@ class AssistantApp:
                 command=self._change_message_limit,
             ).pack(side="left", expand=True, padx=4)
 
+        draft_bar = ttk.LabelFrame(self.root, text="候选回复", padding=(10, 5))
+        draft_bar.pack(fill="x", padx=12, pady=(0, 8))
+        self.draft_enabled_var = tk.BooleanVar(value=self.config.draft_enabled)
+        ttk.Checkbutton(
+            draft_bar,
+            text="启用候选回复生成（开启后会调用已配置的外部模型）",
+            variable=self.draft_enabled_var,
+            command=self._toggle_draft_enabled,
+        ).pack(side="left", padx=4)
+
         actions = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         # 先固定到底部，再让正文占用剩余空间；窄窗口也不会把按钮挤出屏幕。
         actions.pack(side="bottom", fill="x")
@@ -204,6 +228,18 @@ class AssistantApp:
         ttk.Button(actions, text="区域校准", command=self.open_calibration).pack(side="left", padx=6)
         ttk.Button(actions, text="查看历史", command=self.open_history).pack(side="left", padx=6)
         ttk.Button(actions, text="隐藏", command=self.hide).pack(side="right")
+
+        self.candidate_frame = ttk.LabelFrame(self.root, text="候选回复", padding=(10, 6))
+        self.candidate_buttons: list[ttk.Button] = []
+        for index in range(4):
+            button = ttk.Button(
+                self.candidate_frame,
+                text=f"复制候选 {index + 1}",
+                command=lambda value=index: self._copy_candidate(value),
+            )
+            button.pack(side="left", expand=True, fill="x", padx=3)
+            self.candidate_buttons.append(button)
+        self.current_candidates: list[str] = []
 
         self.output = scrolledtext.ScrolledText(
             self.root, wrap="word", font=("Microsoft YaHei UI", 10), padx=12, pady=12, state="disabled"
@@ -213,6 +249,8 @@ class AssistantApp:
         menu = tk.Menu(self.root)
         settings = tk.Menu(menu, tearoff=False)
         self.autostart_var = tk.BooleanVar(value=self.config.autostart)
+        settings.add_command(label="候选回复设置", command=self.open_draft_settings)
+        settings.add_separator()
         settings.add_checkbutton(label="开机启动", variable=self.autostart_var, command=self._toggle_autostart)
         settings.add_command(label="退出程序", command=self.quit)
         menu.add_cascade(label="设置", menu=settings)
@@ -232,6 +270,16 @@ class AssistantApp:
         self.config.set_message_limit(value)
         self.status_var.set(f"已切换为分析最近 {value} 条；下次分析生效")
 
+    def _toggle_draft_enabled(self) -> None:
+        enabled = bool(self.draft_enabled_var.get())
+        self.config.draft_enabled = enabled
+        self.config.save()
+        if enabled:
+            self.status_var.set("候选回复已开启；下次分析将调用已配置的外部模型")
+        else:
+            self.status_var.set("候选回复已关闭；不会调用外部候选模型")
+            self._show_candidate_buttons([])
+
     def _poll_events(self) -> None:
         try:
             while True:
@@ -244,18 +292,38 @@ class AssistantApp:
                 elif name == "quit":
                     self.quit()
                 elif name == "success":
-                    self._show_result(payload)
+                    analysis_id, record = payload
+                    if analysis_id == self.active_analysis_id and not self.has_pending_analysis:
+                        self._show_result(record)
                 elif name == "error":
-                    self._show_error(str(payload))
+                    analysis_id, message = payload
+                    if analysis_id == self.active_analysis_id and not self.has_pending_analysis:
+                        self._show_error(str(message))
                 elif name == "status":
-                    self.status_var.set(str(payload))
+                    analysis_id, message = payload
+                    if analysis_id == self.active_analysis_id and not self.has_pending_analysis:
+                        self.status_var.set(str(message))
+                elif name == "analysis_finished":
+                    analysis_id = int(payload)
+                    if analysis_id == self.active_analysis_id and self.has_pending_analysis:
+                        pending_context = self.pending_analysis_context
+                        self.pending_analysis_context = None
+                        self.has_pending_analysis = False
+                        self.root.after_idle(lambda value=pending_context: self.start_analysis(value))
         except queue.Empty:
             pass
         self.root.after(100, self._poll_events)
 
     def start_analysis(self, context: WindowContext | None = None) -> None:
         if not self.worker_lock.acquire(blocking=False):
-            self.status_var.set("正在分析，请稍候……")
+            if context is None:
+                try:
+                    context = get_foreground_wechat()
+                except CaptureError:
+                    context = self.last_context
+            self.pending_analysis_context = context
+            self.has_pending_analysis = True
+            self.status_var.set("已收到新的分析请求；当前任务结束后将自动分析最新会话……")
             return
         if context is None:
             try:
@@ -265,15 +333,18 @@ class AssistantApp:
                 self.worker_lock.release()
                 self._show_error(str(exc))
                 return
+        self.analysis_sequence += 1
+        analysis_id = self.analysis_sequence
+        self.active_analysis_id = analysis_id
         self.status_var.set(
             f"正在读取聊天记录：0/{self.config.max_messages} 条……"
         )
         self._set_output("正在读取并分析当前微信聊天……\n\n旧分析结果已清除，请稍候。")
         self.root.deiconify()
         self.root.lift()
-        threading.Thread(target=self._analysis_worker, args=(context,), daemon=True, name="分析任务").start()
+        threading.Thread(target=self._analysis_worker, args=(context, analysis_id), daemon=True, name="分析任务").start()
 
-    def _analysis_worker(self, context: WindowContext | None) -> None:
+    def _analysis_worker(self, context: WindowContext | None, analysis_id: int) -> None:
         stage = "准备分析"
         try:
             if context is None:
@@ -296,8 +367,11 @@ class AssistantApp:
                 progress=lambda value: self.events.put(
                     (
                         "status",
-                        value if isinstance(value, str)
-                        else f"正在识别聊天记录：{value}/{self.config.max_messages} 条……",
+                        (
+                            analysis_id,
+                            value if isinstance(value, str)
+                            else f"正在识别聊天记录：{value}/{self.config.max_messages} 条……",
+                        ),
                     )
                 ),
             )
@@ -375,9 +449,29 @@ class AssistantApp:
                 "my_reply_count": my_reply_count,
                 "reply_evaluation": reply_evaluation,
             }
+            if self.config.draft_enabled:
+                if self.draft_client.configured():
+                    stage = "生成候选回复"
+                    self.events.put(("status", (analysis_id, "正在生成候选回复……")))
+                    try:
+                        draft_state = anonymize_state(state)
+                        state["candidate_replies"] = with_pause_candidate(
+                            self.draft_client.generate(
+                                list(draft_state.get("messages", [])),
+                                base_url=self.config.draft_base_url,
+                                model=self.config.draft_model,
+                            )
+                        )
+                    except DraftError as exc:
+                        warnings.append(f"候选回复不可用：{exc}")
+                else:
+                    warnings.append("候选回复已开启，但尚未配置起草 API Key")
             self.events.put((
                 "status",
-                f"已读取 {len(messages)} 条，只提交 {len(redacted)} 条文字/表情，正在调用 Jev……",
+                (
+                    analysis_id,
+                    f"已读取 {len(messages)} 条，只提交 {len(redacted)} 条文字/表情，正在调用 Jev……",
+                ),
             ))
             stage = "调用 TypeSafe"
             outbound_state = anonymize_state(state)
@@ -395,7 +489,7 @@ class AssistantApp:
                 "warnings": warnings,
             }
             self.store.add(resolved_contact, record)
-            self.events.put(("success", record))
+            self.events.put(("success", (analysis_id, record)))
             LOG.info("分析成功；消息数=%s；OCR=%.2f；耗时=%.2f", len(messages), ocr_confidence, result.elapsed_seconds)
         except (CaptureError, TypeSafeError) as exc:
             LOG.warning(
@@ -404,12 +498,13 @@ class AssistantApp:
                 str(exc),
                 exc_info=True,
             )
-            self.events.put(("error", f"{stage}失败：{exc}"))
+            self.events.put(("error", (analysis_id, f"{stage}失败：{exc}")))
         except Exception as exc:
             LOG.exception("分析发生未预期异常；类型=%s", type(exc).__name__)
-            self.events.put(("error", f"{stage}失败：{type(exc).__name__}"))
+            self.events.put(("error", (analysis_id, f"{stage}失败：{type(exc).__name__}")))
         finally:
             self.worker_lock.release()
+            self.events.put(("analysis_finished", analysis_id))
 
     def _show_result(self, record: dict[str, Any]) -> None:
         response = record["response"]
@@ -515,7 +610,31 @@ class AssistantApp:
                     f"● {speaker}：{choice_title(answer)} {float(answer.get('confidence', 0)):.0%}"
                 )
 
-        important_words = ("未读满", "去重", "无法确认", "偏低", "失败", "未知群成员")
+        candidates = [
+            str(value) for value in record.get("redacted_state", {}).get("candidate_replies", [])
+            if str(value).strip()
+        ][:4]
+        ranked_candidates = list(candidates)
+        candidate_answer = answers.get("best_candidate_reply", {})
+        best_choice = str(candidate_answer.get("choice", ""))
+        try:
+            best_index = int(best_choice.rsplit("_", 1)[-1]) - 1
+        except (TypeError, ValueError):
+            best_index = -1
+        if 0 <= best_index < len(candidates):
+            ranked_candidates = [candidates[best_index]] + [
+                value for index, value in enumerate(candidates) if index != best_index
+            ]
+        if ranked_candidates:
+            probabilities = candidate_answer.get("probabilities", {}) or {}
+            lines.extend(["", "【候选回复】"])
+            for index, candidate in enumerate(ranked_candidates):
+                original_index = candidates.index(candidate)
+                probability = float(probabilities.get(f"candidate_{original_index + 1}", 0))
+                marker = "推荐" if index == 0 and best_index >= 0 else f"候选{index + 1}"
+                suffix = f" {probability:.0%}" if probabilities else ""
+                lines.append(f"{marker}{suffix}：{candidate}")
+        important_words = ("未读满", "去重", "无法确认", "偏低", "失败", "未知群成员", "候选回复")
         important_warnings = [
             warning for warning in record.get("warnings", [])
             if any(word in warning for word in important_words)
@@ -527,16 +646,49 @@ class AssistantApp:
         self._apply_speaker_colors(speaker_colors)
         self._apply_key_result_colors()
         self._apply_summary_result_colors(self.output)
+        self._apply_candidate_result_colors(self.output)
+        self._show_candidate_buttons(ranked_candidates)
         self.status_var.set("分析完成")
         self._position_next_to_wechat()
         self.root.deiconify()
         self.root.lift()
 
     def _show_error(self, message: str) -> None:
+        self._show_candidate_buttons([])
         self._set_output(f"无法完成分析\n\n{message}\n\n请确保微信目标聊天位于前台，再按 Ctrl+Alt+J。")
         self.status_var.set("分析失败")
         self.root.deiconify()
         self.root.lift()
+
+    def _show_candidate_buttons(self, candidates: list[str]) -> None:
+        self.current_candidates = list(candidates[:4])
+        if not self.current_candidates:
+            self.candidate_frame.pack_forget()
+            return
+        for index, button in enumerate(self.candidate_buttons):
+            if index < len(self.current_candidates):
+                label = (
+                    "采用暂停回应"
+                    if self.current_candidates[index] == PAUSE_REPLY_CANDIDATE
+                    else f"复制候选 {index + 1}"
+                )
+                button.configure(state="normal", text=label)
+                button.pack(side="left", expand=True, fill="x", padx=3)
+            else:
+                button.pack_forget()
+        self.candidate_frame.pack(side="bottom", fill="x", padx=12, pady=(0, 8), before=self.output)
+
+    def _copy_candidate(self, index: int) -> None:
+        if not 0 <= index < len(self.current_candidates):
+            return
+        candidate = self.current_candidates[index]
+        if candidate == PAUSE_REPLY_CANDIDATE:
+            self.status_var.set("已采用暂停回应；当前无需向微信发送文字")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(candidate)
+        self.root.update_idletasks()
+        self.status_var.set(f"已复制候选 {index + 1}；请自行检查后手动发送")
 
     def _set_output(self, text: str) -> None:
         self.output.configure(state="normal")
@@ -579,6 +731,26 @@ class AssistantApp:
                 self.output.tag_add(tag, f"{found} linestart", f"{found} lineend")
                 start = f"{found}+{len(prefix)}c"
         self.output.configure(state="disabled")
+
+    def _apply_candidate_result_colors(self, widget: tk.Text) -> None:
+        widget.configure(state="normal")
+        for index, (prefix, color) in enumerate(CANDIDATE_RESULT_COLORS.items()):
+            tag = f"candidate_result_{index}"
+            widget.tag_configure(
+                tag,
+                foreground=color,
+                font=("Microsoft YaHei UI", 10, "bold"),
+            )
+            start = "1.0"
+            while True:
+                found = widget.search(prefix, start, stopindex="end")
+                if not found:
+                    break
+                line_text = widget.get(f"{found} linestart", f"{found} lineend")
+                if line_text.startswith(prefix) and "：" in line_text:
+                    widget.tag_add(tag, f"{found} linestart", f"{found} lineend")
+                start = f"{found}+{len(prefix)}c"
+        widget.configure(state="disabled")
 
     def _apply_summary_result_colors(self, widget: tk.Text) -> None:
         widget.configure(state="normal")
@@ -835,6 +1007,48 @@ class AssistantApp:
         ttk.Button(controls, text="删除选中", command=delete_selected).pack(side="left", padx=8)
         ttk.Button(controls, text="删除筛选结果", command=delete_filtered).pack(side="left")
         ttk.Button(controls, text="清空全部", command=delete_all).pack(side="right")
+
+    def open_draft_settings(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("候选回复设置")
+        window.geometry("520x250")
+        window.transient(self.root)
+        window.grab_set()
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="起草 API Key（留空表示保留现有密钥）").grid(row=0, column=0, sticky="w")
+        key_var = tk.StringVar()
+        ttk.Entry(body, textvariable=key_var, show="●").grid(row=1, column=0, sticky="ew", pady=(3, 10))
+        ttk.Label(body, text="OpenAI 兼容接口地址").grid(row=2, column=0, sticky="w")
+        base_var = tk.StringVar(value=self.config.draft_base_url)
+        ttk.Entry(body, textvariable=base_var).grid(row=3, column=0, sticky="ew", pady=(3, 10))
+        ttk.Label(body, text="模型").grid(row=4, column=0, sticky="w")
+        model_var = tk.StringVar(value=self.config.draft_model)
+        ttk.Entry(body, textvariable=model_var).grid(row=5, column=0, sticky="ew", pady=(3, 10))
+        body.columnconfigure(0, weight=1)
+
+        def save() -> None:
+            base_url = base_var.get().strip()
+            model = model_var.get().strip()
+            if not base_url.startswith(("https://", "http://")) or not model:
+                messagebox.showerror("设置失败", "请填写有效的接口地址和模型名称。", parent=window)
+                return
+            try:
+                if key_var.get().strip():
+                    DraftClient.save_api_key(key_var.get())
+                self.config.draft_base_url = base_url
+                self.config.draft_model = model
+                self.config.save()
+            except OSError as exc:
+                messagebox.showerror("设置失败", f"无法保存设置：{exc}", parent=window)
+                return
+            window.destroy()
+            messagebox.showinfo("设置完成", "API Key 已使用 Windows DPAPI 加密保存。", parent=self.root)
+
+        controls = ttk.Frame(body)
+        controls.grid(row=6, column=0, sticky="e")
+        ttk.Button(controls, text="取消", command=window.destroy).pack(side="left", padx=5)
+        ttk.Button(controls, text="保存", command=save).pack(side="left")
 
     def _toggle_autostart(self) -> None:
         enabled = self.autostart_var.get()

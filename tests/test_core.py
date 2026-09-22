@@ -25,6 +25,7 @@ from integrations.wechatauto_readonly.readonly_bridge import (  # noqa: E402
     _title_member_count,
 )
 from wechat_jev.crypto_store import EncryptedHistoryStore  # noqa: E402
+from wechat_jev.draft_client import DraftClient, PAUSE_REPLY_CANDIDATE, parse_candidates, with_pause_candidate  # noqa: E402
 from wechat_jev.capture import (  # noqa: E402
     RapidOcrEngine,
     WindowContext,
@@ -86,7 +87,7 @@ class PrivacyTests(unittest.TestCase):
             "messages": [
                 {
                     "speaker": "真实姓名甲",
-                    "text": "你好",
+                    "text": "真实姓名甲你好",
                     "is_self": False,
                     "message_type": "text",
                     "sender_id": "wxid_private123",
@@ -338,6 +339,7 @@ class GroupOcrTests(unittest.TestCase):
 class MultiPageCaptureTests(unittest.TestCase):
     def test_default_reads_one_hundred_messages(self) -> None:
         self.assertEqual(AppConfig().max_messages, 100)
+        self.assertFalse(AppConfig().draft_enabled)
 
     def test_message_limit_has_four_visible_levels(self) -> None:
         self.assertEqual(MESSAGE_LIMIT_OPTIONS, (100, 150, 200, 250))
@@ -596,6 +598,48 @@ class TypeSafeClientTests(unittest.TestCase):
                 TypeSafeClient().evaluate({"messages": []})
 
 
+class DraftCandidateTests(unittest.TestCase):
+    def test_parse_candidates_accepts_json_and_removes_duplicates(self) -> None:
+        self.assertEqual(parse_candidates('["收到", "我看看", "收到"]'), ["收到", "我看看"])
+
+    def test_pause_reply_is_appended_as_fourth_candidate(self) -> None:
+        self.assertEqual(
+            with_pause_candidate(["回复一", "回复二", "回复三"]),
+            ["回复一", "回复二", "回复三", PAUSE_REPLY_CANDIDATE],
+        )
+
+    def test_candidate_question_uses_stable_keys(self) -> None:
+        questions = build_questions({
+            "participants": [],
+            "messages": [],
+            "candidate_replies": ["候选甲", "候选乙", "候选丙", PAUSE_REPLY_CANDIDATE],
+        })
+        self.assertEqual(
+            questions["best_candidate_reply"]["criteria"],
+            {"candidate_1": "候选甲", "candidate_2": "候选乙", "candidate_3": "候选丙", "candidate_4": PAUSE_REPLY_CANDIDATE},
+        )
+
+    @patch("wechat_jev.draft_client.requests.post")
+    def test_draft_request_uses_only_supplied_anonymous_messages(self, post: Mock) -> None:
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": '["回复一", "回复二", "回复三"]'}}]
+        }
+        post.return_value = response
+        with patch.dict(os.environ, {"DRAFT_API_KEY": "test-key"}):
+            candidates = DraftClient(timeout=1).generate([
+                {"speaker": "成员A", "text": "测试内容"},
+                {"speaker": "我方", "text": "收到"},
+            ])
+        self.assertEqual(candidates, ["回复一", "回复二", "回复三"])
+        request_body = post.call_args.kwargs["json"]
+        request_text = json.dumps(request_body, ensure_ascii=False)
+        self.assertEqual(request_body["thinking"], {"type": "disabled"})
+        self.assertIn("成员A", request_text)
+        self.assertNotIn("wxid_", request_text)
+
+
 class AnalysisStartTests(unittest.TestCase):
     @patch("wechat_jev.ui.threading.Thread")
     @patch("wechat_jev.ui.get_foreground_wechat")
@@ -607,6 +651,10 @@ class AnalysisStartTests(unittest.TestCase):
         app = AssistantApp.__new__(AssistantApp)
         app.config = AppConfig()
         app.worker_lock = __import__("threading").Lock()
+        app.analysis_sequence = 0
+        app.active_analysis_id = 0
+        app.pending_analysis_context = None
+        app.has_pending_analysis = False
         app.status_var = Mock()
         app.root = Mock()
         app._show_error = Mock()
@@ -614,7 +662,28 @@ class AnalysisStartTests(unittest.TestCase):
         app.start_analysis()
         foreground.assert_called_once_with()
         thread_class.assert_called_once()
-        self.assertEqual(thread_class.call_args.kwargs["args"], (context,))
+        self.assertEqual(thread_class.call_args.kwargs["args"], (context, 1))
+
+    @patch("wechat_jev.ui.threading.Thread")
+    def test_busy_analysis_queues_latest_context(self, thread_class: Mock) -> None:
+        from wechat_jev.ui import AssistantApp
+
+        context = WindowContext(hwnd=456, rect=(0, 0, 1000, 800), title="最新会话")
+        app = AssistantApp.__new__(AssistantApp)
+        app.worker_lock = __import__("threading").Lock()
+        app.worker_lock.acquire()
+        app.analysis_sequence = 1
+        app.active_analysis_id = 1
+        app.pending_analysis_context = None
+        app.has_pending_analysis = False
+        app.last_context = None
+        app.status_var = Mock()
+        app.start_analysis(context)
+        self.assertTrue(app.has_pending_analysis)
+        self.assertEqual(app.pending_analysis_context, context)
+        app.status_var.set.assert_called_once()
+        thread_class.assert_not_called()
+        app.worker_lock.release()
 
 
 class SpeakerColorTests(unittest.TestCase):
@@ -648,10 +717,19 @@ class SpeakerColorTests(unittest.TestCase):
             "contact": "微信",
             "raw_messages": [{"speaker": "对方", "text": "你好"}],
             "redacted_state": {"conversation": {"type": "private"}},
-            "warnings": ["数据库文字模式：OCR 识别“测试”，匹配“翟洪竣”，读取 100 条"],
+            "warnings": ["数据库文字模式：OCR 识别“测试”，匹配“示例联系人甲”，读取 100 条"],
         }
-        self.assertTrue(history_record_matches(record, person="翟洪"))
-        self.assertTrue(history_record_matches(record, conversation="翟洪竣"))
+        self.assertTrue(history_record_matches(record, person="联系人甲"))
+        self.assertTrue(history_record_matches(record, conversation="示例联系人甲"))
+
+    def test_candidate_reply_colors_are_distinct_and_stable(self) -> None:
+        from wechat_jev.ui import CANDIDATE_RESULT_COLORS
+
+        self.assertEqual(CANDIDATE_RESULT_COLORS["推荐"], "#2E7D32")
+        self.assertEqual(CANDIDATE_RESULT_COLORS["候选1"], "#2E7D32")
+        self.assertEqual(CANDIDATE_RESULT_COLORS["候选2"], "#1565C0")
+        self.assertEqual(CANDIDATE_RESULT_COLORS["候选3"], "#6A1B9A")
+        self.assertEqual(CANDIDATE_RESULT_COLORS["候选4"], "#EF6C00")
 
     def test_named_speakers_get_distinct_stable_colors(self) -> None:
         from wechat_jev.ui import build_speaker_colors
