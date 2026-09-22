@@ -1,0 +1,71 @@
+name: 发布 Windows 版本和 NuGet 包
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 读取版本号
+        id: version
+        shell: pwsh
+        run: |
+          $Version = "${{ github.ref_name }}" -replace '^v', ''
+          if (-not $Version -or $Version -eq "main") { $Version = "0.1.0-dev.${{ github.run_number }}" }
+          "value=$Version" >> $env:GITHUB_OUTPUT
+
+      - name: 构建 Windows 部署包
+        shell: pwsh
+        run: .\scripts\0922_build_release_v1.ps1 -Version "${{ steps.version.outputs.value }}"
+
+      - name: 安装 NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: 构建 NuGet 包
+        shell: pwsh
+        run: |
+          nuget pack .\packaging\WechatJevAssistant.nuspec `
+            -Version "${{ steps.version.outputs.value }}" `
+            -Properties "commit=${{ github.sha }}" `
+            -OutputDirectory .\dist
+
+      - name: 检查发布包中无私人目录
+        shell: pwsh
+        run: |
+          $Bad = Get-ChildItem .\dist -Recurse -Force | Where-Object {
+            $_.FullName -match '[\\/](data|logs|\.venv|runtime)([\\/]|$)' -or
+            $_.Name -match '(?i)(history\.db|history\.key|\.env$)'
+          }
+          if ($Bad) { $Bad.FullName; throw "发布包包含禁止文件" }
+
+      - name: 发布 NuGet Package
+        shell: pwsh
+        run: |
+          nuget push ".\dist\WechatJevAssistant.${{ steps.version.outputs.value }}.nupkg" `
+            -Source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" `
+            -ApiKey "${{ secrets.GITHUB_TOKEN }}" `
+            -NonInteractive
+
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            .\dist\wechat-jev-assistant-*-windows.zip `
+            .\dist\wechat-jev-assistant-*-windows.zip.sha256 `
+            .\dist\WechatJevAssistant.*.nupkg `
+            --title "微信 Jev 对话助手 ${{ github.ref_name }}" `
+            --generate-notes

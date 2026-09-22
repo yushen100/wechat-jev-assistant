@@ -20,6 +20,7 @@ integrations/wechatauto_readonly/source/
 Thumbs.db
 *.tmp
 *.bak
+dist/
 
 # 凭据与环境文件
 .env

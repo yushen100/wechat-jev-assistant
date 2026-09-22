@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>WechatJevAssistant</id>
+    <version>$version$</version>
+    <title>微信 Jev 对话助手</title>
+    <authors>yushen100</authors>
+    <owners>yushen100</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectUrl>https://github.com/yushen100/wechat-jev-assistant</projectUrl>
+    <repository type="git" url="https://github.com/yushen100/wechat-jev-assistant.git" commit="$commit$" />
+    <description>Windows 微信对话分析助手：本地读取、脱敏、TypeSafe Jev 判断与加密历史。</description>
+    <releaseNotes>首个私有预发布版本。</releaseNotes>
+    <tags>windows wechat typesafe jev conversation-analysis</tags>
+  </metadata>
+  <files>
+    <file src="..\README.md" target="tools" />
+    <file src="..\requirements.txt" target="tools" />
+    <file src="..\setup.ps1" target="tools" />
+    <file src="..\main.pyw" target="tools" />
+    <file src="..\0921_启动微信Jev助手_v1.cmd" target="tools" />
+    <file src="..\0921_运行测试_v1.cmd" target="tools" />
+    <file src="..\0921_使用说明_v1.md" target="tools" />
+    <file src="..\assets\**\*" target="tools\assets" />
+    <file src="..\content\**\*" target="tools\content" />
+    <file src="..\src\**\*.py" target="tools\src" />
+    <file src="..\tests\**\*.py" target="tools\tests" />
+    <file src="..\integrations\wechatauto_readonly\PINNED_COMMIT.txt" target="tools\integrations\wechatauto_readonly" />
+    <file src="..\integrations\wechatauto_readonly\README.md" target="tools\integrations\wechatauto_readonly" />
+    <file src="..\integrations\wechatauto_readonly\readonly_bridge.py" target="tools\integrations\wechatauto_readonly" />
+  </files>
+</package>

@@ -19,6 +19,8 @@
 
 完整步骤见：[部署指南](content/0922_部署指南_v1.md)。
 
+推荐从 [Releases](https://github.com/yushen100/wechat-jev-assistant/releases) 下载经过校验的 Windows ZIP；自动化部署也可使用 GitHub Packages 中的 `WechatJevAssistant` NuGet 包。
+
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\setup.ps1
