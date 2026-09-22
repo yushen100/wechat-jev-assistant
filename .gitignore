@@ -22,9 +22,6 @@ Thumbs.db
 *.bak
 dist/
 
-# 旧图脱敏不完整，仅保留本机副本
-assets/0922_界面示意_*_v1.png
-
 # 凭据与环境文件
 .env
 .env.*

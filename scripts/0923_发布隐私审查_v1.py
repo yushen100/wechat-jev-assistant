@@ -17,8 +17,6 @@ def inspect(name, data):
     problems = []
     if FORBIDDEN.search(name):
         problems.append('私人目录或运行数据')
-    if '0922_界面示意_' in name:
-        problems.append('已撤下的旧图片')
     if Path(name).suffix.lower() in {'.py', '.md', '.txt', '.json', '.yml', '.yaml', '.ps1', '.cmd', '.nuspec'}:
         text = data.decode('utf-8-sig', errors='replace')
         if SECRETS.search(text):
